@@ -19,6 +19,7 @@ const { startMarketScheduler } = require("./scheduler/market");
     openMin: cfg.openMin,
     openMax: cfg.openMax,
     targets: cfg.targets,
+    onFirstHit: (e) => broadcast("firsthit", e),
   });
   const server = startHttp(cfg.port);
   const { broadcast } = attachWs(server, store);

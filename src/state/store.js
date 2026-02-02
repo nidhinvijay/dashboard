@@ -1,16 +1,22 @@
-const { nowIST } = require("../utils/time");
 const { logger } = require("../logger");
+const { levels } = require("../levels");
+
 let paused = false;
 
-function createStore({ openMin, openMax, targets }) {
+function createStore({ openMin, openMax, targets, onFirstHit }) {
   const active = new Map(),
     achieved = new Map();
+  const firstHit = { NIFTY: { CE: {}, PE: {} }, SENSEX: { CE: {}, PE: {} } };
 
   function reset() {
     active.clear();
     achieved.clear();
-    paused = true; // freeze until 09:15 start
-    logger.info("STORE RESET (cleared active+achieved, paused=true)");
+    firstHit.NIFTY.CE = {};
+    firstHit.NIFTY.PE = {};
+    firstHit.SENSEX.CE = {};
+    firstHit.SENSEX.PE = {};
+    paused = true;
+    logger.info("STORE RESET (cleared active+achieved+firstHit, paused=true)");
   }
 
   function pause() {
@@ -25,18 +31,44 @@ function createStore({ openMin, openMax, targets }) {
     return paused;
   }
 
-  function upsert(meta, tick) {
-    if (paused) return; // ✅ freeze after 15:30
-    if (achieved.has(meta.token)) return; // ✅ never re-enter once achieved
-
-    const now = new Date().toLocaleString("en-IN", {
+  function nowIST() {
+    return new Date().toLocaleString("en-IN", {
       timeZone: "Asia/Kolkata",
       hour12: false,
     });
+  }
+
+  function recordFirstHits(meta, hikePct, now, targetPct) {
+    const idx = meta.name,
+      typ = meta.type;
+    const maxLevel = Math.min(targetPct, Math.floor(hikePct / 5) * 5);
+    if (maxLevel < 5) return;
+
+    for (const lvl of levels(5, maxLevel)) {
+      if (!firstHit[idx]?.[typ]) continue;
+      if (firstHit[idx][typ][lvl]) continue;
+      firstHit[idx][typ][lvl] = { tsym: meta.tsym, time: now };
+      onFirstHit &&
+        onFirstHit({
+          index: idx,
+          type: typ,
+          level: lvl,
+          tsym: meta.tsym,
+          time: now,
+        });
+    }
+  }
+
+  function upsert(meta, tick) {
+    if (paused) return;
+    if (achieved.has(meta.token)) return;
+
+    const now = nowIST();
     const open = tick?.ohlc?.open,
       lowTick = tick?.ohlc?.low,
       ltp = tick?.last_price;
     const targetPct = targets?.[meta.name] ?? 50;
+
     if (!open || !ltp) return;
     if (open < openMin || open > openMax) return;
 
@@ -45,6 +77,8 @@ function createStore({ openMin, openMax, targets }) {
     const low_time = low < prev.low ? now : prev.low_time;
 
     const hikePct = ((ltp - low) / low) * 100;
+    recordFirstHits(meta, hikePct, now, targetPct);
+
     const targetPrice = +(low * (1 + targetPct / 100)).toFixed(2);
     const row = {
       ...prev,
@@ -65,6 +99,7 @@ function createStore({ openMin, openMax, targets }) {
       );
       return { kind: "achieved", row: achieved.get(meta.token) };
     }
+
     active.set(meta.token, row);
     return { kind: "active", row };
   }

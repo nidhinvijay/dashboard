@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <title>Options Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
       body {
         font-family: system-ui;
@@ -23,6 +24,7 @@
       button.active {
         background: #eee;
       }
+
       table {
         border-collapse: collapse;
         width: 100%;
@@ -39,17 +41,65 @@
         position: sticky;
         top: 0;
       }
+      .hidden {
+        display: none;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        align-items: stretch;
+      }
+      .chartBox {
+        border: 1px solid #eee;
+        padding: 8px;
+        background: #fff;
+      }
+      canvas {
+        width: 100% !important;
+        height: 260px !important; /* ✅ forces 4 charts to fit */
+      }
+      @media (max-width: 900px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+        canvas {
+          height: 240px !important;
+        }
+      }
     </style>
   </head>
   <body>
     <h3>Options Dashboard</h3>
     <div class="tabs" id="tabs"></div>
 
-    <h4>Active</h4>
-    <div id="activeView"></div>
+    <div id="tablesView">
+      <h4>Active</h4>
+      <div id="activeView"></div>
+      <h4>Achieved</h4>
+      <div id="achievedView"></div>
+    </div>
 
-    <h4>Achieved</h4>
-    <div id="achievedView"></div>
+    <div id="niftyCharts" class="hidden">
+      <h4>NIFTY Charts</h4>
+      <div class="grid">
+        <div class="chartBox"><canvas id="niftySnapCE"></canvas></div>
+        <div class="chartBox"><canvas id="niftySnapPE"></canvas></div>
+        <div class="chartBox"><canvas id="niftyRaceCE"></canvas></div>
+        <div class="chartBox"><canvas id="niftyRacePE"></canvas></div>
+      </div>
+    </div>
+
+    <div id="sensexCharts" class="hidden">
+      <h4>SENSEX Charts</h4>
+      <div class="grid">
+        <div class="chartBox"><canvas id="sensexSnapCE"></canvas></div>
+        <div class="chartBox"><canvas id="sensexSnapPE"></canvas></div>
+        <div class="chartBox"><canvas id="sensexRaceCE"></canvas></div>
+        <div class="chartBox"><canvas id="sensexRacePE"></canvas></div>
+      </div>
+    </div>
 
     <script src="app.js"></script>
   </body>
