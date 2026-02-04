@@ -70,7 +70,7 @@ function createStore({ openMin, openMax, targets, onFirstHit }) {
     const targetPct = targets?.[meta.name] ?? 50;
 
     if (!open || !ltp) return;
-    if (open < openMin || open > openMax) return;
+    // if (open < openMin || open > openMax) return;
 
     const prev = active.get(meta.token) || { ...meta, open, low: Infinity };
     const low = Math.min(prev.low, lowTick ?? Infinity, ltp);
