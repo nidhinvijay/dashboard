@@ -1,87 +1,150 @@
 const { cfg } = require("./config");
 const { logger } = require("./logger");
 
-const { fetchInstruments } = require("./instruments/fetch");
-const {
-  pickImmediateExpiries,
-  filterOptionTokens,
-} = require("./instruments/filter");
+const { createStore } = require("./store");
+const { buildUniverse } = require("./universe");
+const { startTicker } = require("./ticker");
+const { startServer } = require("./server");
+const { startSessionLoop } = require("./session");
 
-const { createStore } = require("./state/store");
-const { startHttp } = require("./server/http");
-const { attachWs } = require("./server/ws");
+const { loadState, saveState } = require("./persist");
+const { istHM, dateIST } = require("./ist");
 
-const { connectTicker } = require("./ticker/connect");
-const { createTickerController } = require("./ticker/controller");
-const { startMarketScheduler } = require("./scheduler/market");
-const { filterByTodayOpen } = require("./instruments/openFilter");
-
-// --- IST helpers (no dependency) ---
-function istHM() {
-  const p = new Intl.DateTimeFormat("en-IN", {
-    timeZone: "Asia/Kolkata",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).formatToParts(new Date());
-  const get = (t) => p.find((x) => x.type === t)?.value;
-  return `${get("hour")}:${get("minute")}`;
-}
-const inRange = (hm, a, b) => hm >= a && hm <= b;
+const { buildHistoryReplay, startHistoryReplay } = require("./history");
 
 (async function main() {
-  logger.info("Boot start");
+  logger.info(`Boot MODE=${cfg.mode}`);
 
-  // Store with first-hit events broadcast
+  const store = createStore(cfg);
+
+  // Restore today's saved state if exists
+  const saved = loadState();
+  if (saved?.active) saved.active.forEach((r) => store.active.set(r.token, r));
+  if (saved?.achieved)
+    saved.achieved.forEach((r) => store.achieved.set(r.token, r));
+
+  // Broadcaster will be set after server starts
   let broadcast = () => {};
-  const store = createStore({
-    openMin: cfg.openMin,
-    openMax: cfg.openMax,
-    targets: cfg.targets,
-    onFirstHit: (e) => broadcast("firsthit", e),
+
+  // Ticker (LIVE only)
+  const ticker = startTicker(cfg, store, (k, r) => broadcast(k, r));
+
+  let dayStarted = false;
+  let dayKey = dateIST();
+
+  // universe cache for the day (fixed)
+  let metasCache = [];
+  let metaByToken = new Map();
+
+  // history replay handle
+  let historyHandle = null;
+
+  async function ensureDayStarted() {
+    const hm = istHM();
+
+    // date rollover protection
+    if (dateIST() !== dayKey) {
+      dayKey = dateIST();
+      dayStarted = false;
+      metasCache = [];
+      metaByToken = new Map();
+      if (historyHandle) historyHandle.stop();
+      historyHandle = null;
+
+      store.reset();
+      saveState({ universe: [], active: [], achieved: [] });
+      logger.info("New date detected → hard reset");
+    }
+
+    if (dayStarted) return;
+
+    // In LIVE mode, only start within session window
+    if (cfg.mode === "LIVE") {
+      if (hm < "09:15") return;
+      if (hm > "15:30") return;
+    }
+
+    logger.info("Day start: selecting universe by TODAY OPEN range (₹50-₹500)");
+    const metas = await buildUniverse(cfg); // nearest expiry + OPEN filter
+    metasCache = metas;
+    metaByToken = new Map(metas.map((m) => [m.token, m]));
+
+    store.resume();
+    dayStarted = true;
+
+    // Persist universe for reference
+    saveState({
+      universe: metas,
+      active: [...store.active.values()],
+      achieved: [...store.achieved.values()],
+    });
+    logger.info(`Universe fixed for day: ${metas.length} tokens`);
+
+    if (cfg.mode === "LIVE") {
+      ticker.setUniverse(metasCache);
+      ticker.connect();
+      logger.info("LIVE: ticker connected/subscribed");
+      return;
+    }
+
+    // HISTORY mode
+    const d = dateIST();
+    const events = await buildHistoryReplay(cfg, metasCache, d);
+    historyHandle = startHistoryReplay({
+      cfg,
+      events,
+      metaByToken,
+      store,
+      broadcast,
+    });
+    logger.info("HISTORY: replay running");
+  }
+
+  function resetDay() {
+    logger.info("09:00 reset");
+    dayStarted = false;
+    metasCache = [];
+    metaByToken = new Map();
+    if (historyHandle) historyHandle.stop();
+    historyHandle = null;
+
+    store.reset();
+    saveState({ universe: [], active: [], achieved: [] });
+  }
+
+  function stopDay() {
+    logger.info("15:30 stop (freeze)");
+    store.pause();
+    if (cfg.mode === "LIVE") ticker.stop();
+    if (historyHandle) historyHandle.stop();
+    historyHandle = null;
+
+    saveState({
+      universe: [],
+      active: [...store.active.values()],
+      achieved: [...store.achieved.values()],
+    });
+  }
+
+  // Session loop always runs
+  startSessionLoop({
+    onReset: resetDay,
+    onStart: async () => {}, // lazy start via ensureDayStarted()
+    onStop: stopDay,
   });
 
-  // HTTP + WS
-  const server = startHttp(cfg.port);
-  const ws = attachWs(server, store);
-  broadcast = ws.broadcast;
+  // Start server with lazy-start hook (first user open triggers ensureDayStarted)
+  const srv = startServer(cfg.port, store, ensureDayStarted);
+  broadcast = srv.broadcast;
 
-  // Ticker + controller
-  const ticker = connectTicker(cfg);
-  const ctrl = createTickerController(ticker, store, broadcast);
+  // Persist state every 5 seconds (so restart keeps Active/Achieved)
+  setInterval(() => {
+    saveState({
+      universe: metasCache,
+      active: [...store.active.values()],
+      achieved: [...store.achieved.values()],
+    });
+  }, 5000);
 
-  // Reload universe (called daily at 09:15 by scheduler)
-  async function reloadUniverse() {
-    logger.info("Reload universe: downloading instruments");
-    const rows = await fetchInstruments();
-
-    const expiries = pickImmediateExpiries(rows, cfg.underlyings);
-    let metas = filterOptionTokens(rows, expiries); // expiry + CE/PE + segment filter
-
-    metas = await filterByTodayOpen(metas, cfg); // ✅ ONLY open in ₹25–₹500
-
-    logger.info(`Reload universe done (open filtered): ${metas.length} tokens`);
-    return metas;
-  }
-
-  // Connect ticker
-  ticker.on("connect", () => logger.info("Ticker connected"));
-  ticker.connect();
-
-  // Scheduler handles:
-  // 09:00 reset + freeze, 09:15 load+subscribe+resume, 15:30 stop+freeze
-  startMarketScheduler({ store, ctrl, reloadUniverse });
-
-  // ✅ AUTO-START ON RESTART:
-  // If you restart during market hours, don't wait for next 09:15.
-  const hm = istHM();
-  if (inRange(hm, "09:15", "15:30")) {
-    logger.info(`Boot auto-start (IST ${hm})`);
-    const metas = await reloadUniverse();
-    ctrl.setUniverse(metas);
-    store.resume();
-    ctrl.subscribe();
-  } else {
-    logger.info(`Boot waiting for schedule (IST ${hm})`);
-  }
+  logger.info("Ready: open the dashboard URL to trigger start (lazy)");
 })();

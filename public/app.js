@@ -1,14 +1,11 @@
 const proto = location.protocol === "https:" ? "wss" : "ws";
-const host = location.host || "localhost:3000";
-const ws = new WebSocket(`${proto}://${host}/ws`);
-// If your local WS is not on /ws, use this instead:
-// const ws = new WebSocket(`${proto}://${host}`);
+const ws = new WebSocket(`${proto}://${location.host}`);
 
 const active = new Map(),
   achieved = new Map();
 const firstHit = { NIFTY: { CE: {}, PE: {} }, SENSEX: { CE: {}, PE: {} } };
 
-const tableTabs = [
+const tabs = [
   { id: "NIFTY_CE", name: "NIFTY", type: "CE", label: "NIFTY CE" },
   { id: "NIFTY_PE", name: "NIFTY", type: "PE", label: "NIFTY PE" },
   { id: "SENSEX_CE", name: "SENSEX", type: "CE", label: "SENSEX CE" },
@@ -26,20 +23,15 @@ const cols = [
   "ltp",
   "hikePct",
   "targetPct",
-  "targetPrice",
   "target_time",
 ];
 const fmt = (k, v) =>
   v == null ? "" : k === "hikePct" ? Number(v).toFixed(2) + "%" : v;
 
-// ✅ Short label for charts: SENSEX2620582400CE -> 82400CE
 function shortSym(tsym) {
   const m = String(tsym).match(/(\d+)(CE|PE)$/);
   if (!m) return tsym;
-
-  const digits = m[1]; // all digits
-  const strike = digits.slice(-5); // ✅ last 5 digits only
-  return `${strike}${m[2]}`; // 82400CE
+  return `${m[1].slice(-5)}${m[2]}`; // last 5 digits + CE/PE
 }
 
 const T = document.getElementById("tabs");
@@ -48,12 +40,11 @@ const CV = document.getElementById("achievedView");
 const tablesView = document.getElementById("tablesView");
 const niftyCharts = document.getElementById("niftyCharts");
 const sensexCharts = document.getElementById("sensexCharts");
-
 let tabId = "NIFTY_CE";
-let charts = {};
+const charts = {};
 
 function drawTabs() {
-  T.innerHTML = tableTabs
+  T.innerHTML = tabs
     .map(
       (t) =>
         `<button data-id="${t.id}" class="${t.id === tabId ? "active" : ""}">${t.label}</button>`,
@@ -86,101 +77,74 @@ function pick(map, name, type) {
     .sort((a, b) => String(a.tsym).localeCompare(String(b.tsym)));
 }
 
-function showView(kind) {
+function view(kind) {
   tablesView.classList.toggle("hidden", kind !== "tables");
-  niftyCharts.classList.toggle("hidden", kind !== "niftyCharts");
-  sensexCharts.classList.toggle("hidden", kind !== "sensexCharts");
+  niftyCharts.classList.toggle("hidden", kind !== "nifty");
+  sensexCharts.classList.toggle("hidden", kind !== "sensex");
 }
 
-function chTitle(id) {
-  const m = {
-    niftySnapCE: "NIFTY Snapshot CE",
-    niftySnapPE: "NIFTY Snapshot PE",
-    niftyRaceCE: "NIFTY First-to-hit CE",
-    niftyRacePE: "NIFTY First-to-hit PE",
-    sensexSnapCE: "SENSEX Snapshot CE",
-    sensexSnapPE: "SENSEX Snapshot PE",
-    sensexRaceCE: "SENSEX First-to-hit CE",
-    sensexRacePE: "SENSEX First-to-hit PE",
-  };
-  return m[id] || id;
-}
-
-function ensureChart(id) {
+function ensureChart(id, label) {
   if (charts[id]) return charts[id];
-  const ctx = document.getElementById(id).getContext("2d");
-  charts[id] = new Chart(ctx, {
+  charts[id] = new Chart(document.getElementById(id), {
     type: "bar",
-    data: { labels: [], datasets: [{ label: chTitle(id), data: [] }] },
+    data: { labels: [], datasets: [{ label, data: [] }] },
     options: {
       responsive: true,
-      maintainAspectRatio: false, // obey CSS height so 4 charts fit
-      plugins: { legend: { display: true } },
+      maintainAspectRatio: false,
       scales: { x: { ticks: { maxRotation: 60, minRotation: 60 } } },
     },
   });
   return charts[id];
 }
 
-function renderSnapshot(index, type, canvasId) {
+function renderSnapshot(index, type, id) {
   const list = pick(active, index, type);
-  const labels = list.map((x) => shortSym(x.tsym)); // ✅ short labels
-  const data = list.map((x) => +(x.hikePct || 0).toFixed(2));
-  const ch = ensureChart(canvasId);
-  ch.data.labels = labels;
-  ch.data.datasets[0].data = data;
+  const ch = ensureChart(id, `${index} Snapshot ${type}`);
+  ch.data.labels = list.map((x) => shortSym(x.tsym));
+  ch.data.datasets[0].data = list.map((x) => +(x.hikePct || 0).toFixed(2));
   ch.update();
 }
 
-function renderRace(index, type, canvasId, target) {
+function renderRace(index, type, id, target) {
   const levels = [];
   for (let i = 5; i <= target; i += 5) levels.push(i);
-  const winners = levels.map((lvl) =>
-    shortSym(firstHit[index][type][lvl]?.tsym || ""),
-  ); // ✅ short labels
-  const ch = ensureChart(canvasId);
-  ch.data.labels = winners; // X axis = winners (short)
-  ch.data.datasets[0].data = levels; // Y values = levels
+  const winners = levels.map((l) =>
+    shortSym(firstHit[index][type][l]?.tsym || ""),
+  );
+  const ch = ensureChart(id, `${index} FirstHit ${type}`);
+  ch.data.labels = winners;
+  ch.data.datasets[0].data = levels;
   ch.update();
-}
-
-function drawCharts(index) {
-  if (index === "NIFTY") {
-    renderSnapshot("NIFTY", "CE", "niftySnapCE");
-    renderSnapshot("NIFTY", "PE", "niftySnapPE");
-    renderRace("NIFTY", "CE", "niftyRaceCE", 50);
-    renderRace("NIFTY", "PE", "niftyRacePE", 50);
-  } else {
-    renderSnapshot("SENSEX", "CE", "sensexSnapCE");
-    renderSnapshot("SENSEX", "PE", "sensexSnapPE");
-    renderRace("SENSEX", "CE", "sensexRaceCE", 100);
-    renderRace("SENSEX", "PE", "sensexRacePE", 100);
-  }
 }
 
 function draw() {
   drawTabs();
 
   if (tabId === "NIFTY_CHARTS") {
-    showView("niftyCharts");
-    drawCharts("NIFTY");
+    view("nifty");
+    renderSnapshot("NIFTY", "CE", "niftySnapCE");
+    renderSnapshot("NIFTY", "PE", "niftySnapPE");
+    renderRace("NIFTY", "CE", "niftyRaceCE", 50);
+    renderRace("NIFTY", "PE", "niftyRacePE", 50);
     return;
   }
   if (tabId === "SENSEX_CHARTS") {
-    showView("sensexCharts");
-    drawCharts("SENSEX");
+    view("sensex");
+    renderSnapshot("SENSEX", "CE", "sensexSnapCE");
+    renderSnapshot("SENSEX", "PE", "sensexSnapPE");
+    renderRace("SENSEX", "CE", "sensexRaceCE", 100);
+    renderRace("SENSEX", "PE", "sensexRacePE", 100);
     return;
   }
 
-  showView("tables");
-  const t = tableTabs.find((x) => x.id === tabId);
+  view("tables");
+  const t = tabs.find((x) => x.id === tabId);
   AV.innerHTML = table(pick(active, t.name, t.type));
   CV.innerHTML = table(pick(achieved, t.name, t.type));
 }
 
 ws.onmessage = (ev) => {
   const msg = JSON.parse(ev.data);
-
   if (msg.kind === "active") {
     active.set(msg.row.token, msg.row);
     achieved.delete(msg.row.token);
@@ -189,13 +153,11 @@ ws.onmessage = (ev) => {
     achieved.set(msg.row.token, msg.row);
     active.delete(msg.row.token);
   }
-
   if (msg.kind === "firsthit") {
     const e = msg.row || msg;
-    if (!firstHit[e.index]?.[e.type]) return;
-    firstHit[e.index][e.type][e.level] = { tsym: e.tsym, time: e.time };
+    if (firstHit[e.index]?.[e.type])
+      firstHit[e.index][e.type][e.level] = { tsym: e.tsym, time: e.time };
   }
-
   draw();
 };
 

@@ -9,4 +9,15 @@ function istHM() {
   return `${get("hour")}:${get("minute")}`;
 }
 
-module.exports = { istHM };
+function nowIST() {
+  return new Date().toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    hour12: false,
+  });
+}
+
+function dateIST() {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }); // YYYY-MM-DD
+}
+
+module.exports = { istHM, nowIST, dateIST };
